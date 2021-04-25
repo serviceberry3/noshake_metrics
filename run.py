@@ -28,6 +28,11 @@ item_num = 0
 # initialize pos_init to 17x3 zeros matrix
 pos_init = np.zeros((17, 3))
 
+animate = False
+
+#number of frames in which square couldn't be found
+missed_frames = 0
+
 
 class ShapeDetector:
     def __init__(self):
@@ -189,7 +194,7 @@ def invert_image(img):
     # get height and width of the image
     height, width = img.shape
 
-    return 255-img
+    return 255 - img
 
 
 # Run the model on 30 frames at a time
@@ -197,18 +202,20 @@ def find_square_on_img(image):
     # these globals get updated on every callback
     global item
     global item_num
+    global animate
+    global missed_frames
 
     #crop and resize image
-    cropped = image[250:700, 200:1720] # startY:endY, startX:endX
+    cropped = image[180:800, 200:1720] # startY:endY, startX:endX
     resized = imutils.resize(cropped, width=300)
 
-    print("Resized shape is (rows, cols, channels)", resized.shape)
+    #print("Resized shape is (rows, cols, channels)", resized.shape)
 
     #compute resize ratio: ratio of original image height to new image height (pixels of original per pixel of new)
     ratioY = cropped.shape[0] / float(resized.shape[0])
     ratioX = cropped.shape[1] / float(resized.shape[1])
 
-    print("X and Y ratios are", ratioX, ",", ratioY)
+    #print("X and Y ratios are", ratioX, ",", ratioY)
 
     # convert the resized image to grayscale, blur it slightly, and threshold it
     gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
@@ -218,6 +225,8 @@ def find_square_on_img(image):
     #invert image colors
     thresh = invert_image(thresh)
 
+    #print("Thresh shape is (rows, cols, channels)", thresh.shape)
+
     # image has now been binarized and inverted, display it
     cv2.imshow("Thresh", thresh)
 
@@ -225,9 +234,18 @@ def find_square_on_img(image):
     cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cnts = imutils.grab_contours(cnts)
 
+    correct_contour = None
+    winning_yval = 100000
+    winning_xval = 0
+
+    print(len(cnts), "contours found in frame")
+
     # loop over the contours
     for c in cnts:
-        # compute the "centers of mass" of each contour in the image
+        #initialize shape var
+        shape = None
+
+        #compute the "centers of mass" of each contour in the image
         M = cv2.moments(c)
 
         compute_com_success = True
@@ -242,31 +260,119 @@ def find_square_on_img(image):
         # detect name of shape using contour
         shape = sd.detect(c)
 
-        # multiply the contour (x, y)-coordinates by the resize ratio,
-        # then draw the contours and the name of the shape on the image
-        c = c.astype("float")
-        #print(c)
+        if shape != None:
+            # multiply the contour (x, y)-coordinates by the resize ratio,
+            # then draw the contours and the name of the shape on the image
+            c = c.astype("float")
+
+            #print(c)
+            print("Length of this cntr is", c.size/2)
+
+            #placeholder to keep track of top left and bottom rt pts
+            top_left = []
+            top_left_sum = 1000000
+            btm_rt = []
+            btm_rt_sum = 0
+
+            #find corresponding max y val for that x val
+            for i in range(0, c.shape[0]): #iterate over all points in contour
+                this_x = c[i, :, 0]
+                this_y = c[i, :, 1]
+
+                xysum = this_x + this_y
+
+                #iterate over all points in contour checking sum of x and y vals
+                if xysum > btm_rt_sum:
+                    btm_rt_sum = xysum
+                    btm_rt = np.array([this_x, this_y])
+
+                if xysum < top_left_sum:
+                    top_left_sum = xysum
+                    top_left = np.array([this_x, this_y])
+                    
+            print("Top left is", top_left, "bottom rt is", btm_rt)
+
+            #if top left or btm rt couldn't be found, jump to next contour
+            if btm_rt.size == 0 or top_left.size == 0:
+                print("An extraneous rect or square was found in a frame/img, because btm_rt or top_left is []")
+                continue
+
+            #otherwise we can successfully compute pixel dimensions of the square
+            width = btm_rt[0] - top_left[0]
+            height = btm_rt[1] - top_left[1]
+            dimsum = width + height
+
+            #to weed out contours that aren't the black square, put threshhold on size of square and diff between height and width
+            if dimsum < 45 and dimsum > 10 and abs(width - height) < 20:
+                print("This contour width is", width, "and height is", height) 
+
+                #we could still have some extraneous contours that were found, so we'll keep track of which one is highest in image (extraneous ones tend to be found on bottom of drone)
+
+                #if we were able to compute the center of mass
+                if compute_com_success and cY < winning_yval:
+                    print("Center of mass of this contour found was", cX, cY)
+                    print("New highest contour in image found, setting correct_contour")
+
+                    winning_yval = cY
+                    winning_xval = cX
+                    correct_contour = c
+                else:
+                    print("FAIL on compute_com_success and cY < winning_yval")
+            '''else:
+                print("FAIL on dimension and squarish check")'''
+        '''else:
+            print("FAIL on shape != None")'''
+
+    #if we found some contour
+    if correct_contour is not None:
+        #print("Correct_contour is an array")
 
         #scale up the contour appropriately in both x and y dims
-        c[:, :, 0] *= ratioX
-        c[:, :, 1] *= ratioY
-        #c *= ratio
+        correct_contour[:, :, 0] *= ratioX
+        correct_contour[:, :, 1] *= ratioY
 
-        c = c.astype("int")
-        cv2.drawContours(cropped, [c], -1, (0, 255, 0), 2)
+        correct_contour = correct_contour.astype("int")
 
-        if (compute_com_success):
-            cv2.putText(cropped, shape, (cX, cY), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+        #draw the contour in green on original cropped color image
+        cv2.drawContours(cropped, [correct_contour], -1, (0, 255, 0), 2)
+
+        #write name of shape at the "center of mass" of the contour
+        cv2.putText(cropped, shape, (winning_xval, winning_yval), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+    #otherwise we didn't find the square, increment missed_frames    
+    else:
+        #print("This contour width is", width, "and height is", height) 
+        #print("FAIL on correct_contour is not None")
+        cv2.waitKey(0)
+
+    
+        missed_frames += 1
+            
 
     # show the output image
     cv2.imshow("Image", cropped)
-    cv2.waitKey(0)
 
-    '''
-    #check for quit signal
-    #'q' button is set as quitting button
-    if cv2.waitKey(1) & 0xFF == ord('q'): 
-        cv2.destroyAllWindows()'''
+    #if a was pressed, play back the processed video, waiting 10 ms on each frame
+    if (animate):
+        k = cv2.waitKey(5)
+
+    else:
+        #wait indefinitely for a key press
+        k = cv2.waitKey(0)
+
+        #if key is n, move to next frame of vid
+        if k == ord('n'):
+            cv2.destroyAllWindows()
+
+        #if key is q, close all windows and quit program
+        elif k == ord('q'): 
+            cv2.destroyAllWindows()
+            quit()
+
+        #if key is a, play the video frame by frame, processing the data
+        elif k == ord('a'):
+            animate = True
+
 
 
 def process_img(img):
@@ -305,6 +411,7 @@ def process_video(vid):
             break
 
     print(currentframe, "frames found from video")
+    print(missed_frames, "frames missed")
 
     # Release all space and windows once done
     cam.release()
