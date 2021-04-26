@@ -1,8 +1,3 @@
-'''
-Realtime 3D Human Reconstruction using Posenet and Facebook's VideoPose3D
-3D drawing using pygtagrph based on OpenGL
-Speed: TBD
-'''
 import os
 import sys
 from pyqtgraph.Qt import QtCore, QtGui
@@ -32,6 +27,20 @@ animate = False
 
 #number of frames in which square couldn't be found
 missed_frames = 0
+
+currentframe = 0
+currTime = 0
+cam = None
+
+#the position of the square's center in the last frame
+lastX = None
+lastY = None
+
+#arrays to hold data to plot
+xDispDataX = []
+xDispDataY = []
+yDispDataX = []
+yDispDataY = []
 
 
 class ShapeDetector:
@@ -109,12 +118,6 @@ class Visualizer(object):
 
         # read in a frame from the VideoCapture (webcam)
         _, image = self.cap.read()  # ignore the other returned value
-
-        # rotate the frame
-        #image = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
-
-        # display the feed
-        #cv2.imshow('Camera preview', image)
 
         resized = imutils.resize(image, width=300)
         ratio = image.shape[0] / float(resized.shape[0])
@@ -200,10 +203,10 @@ def invert_image(img):
 # Run the model on 30 frames at a time
 def find_square_on_img(image):
     # these globals get updated on every callback
-    global item
-    global item_num
-    global animate
-    global missed_frames
+    global item, item_num, animate, missed_frames
+
+    #position of square's center in last frame
+    global lastX, lastY
 
     #crop and resize image
     cropped = image[180:800, 200:1720] # startY:endY, startX:endX
@@ -228,7 +231,9 @@ def find_square_on_img(image):
     #print("Thresh shape is (rows, cols, channels)", thresh.shape)
 
     # image has now been binarized and inverted, display it
-    cv2.imshow("Thresh", thresh)
+    cv2.namedWindow('Processed image', cv2.WINDOW_NORMAL)
+    cv2.imshow("Processed image", thresh)
+    cv2.resizeWindow('Processed image', 600, 300)
 
     # find contours in the thresholded image
     cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -238,7 +243,12 @@ def find_square_on_img(image):
     winning_yval = 100000
     winning_xval = 0
 
-    print(len(cnts), "contours found in frame")
+    #initialize x and y disp to 0
+    #**NOTE: if we can't detect square in this frame, [0, 0] WILL BE RETURNED, THROWING DATA OFF
+    xDisp = 0
+    yDisp = 0
+
+    #print(len(cnts), "contours found in frame")
 
     # loop over the contours
     for c in cnts:
@@ -266,7 +276,7 @@ def find_square_on_img(image):
             c = c.astype("float")
 
             #print(c)
-            print("Length of this cntr is", c.size/2)
+            #print("Length of this cntr is", c.size/2)
 
             #placeholder to keep track of top left and bottom rt pts
             top_left = []
@@ -290,11 +300,11 @@ def find_square_on_img(image):
                     top_left_sum = xysum
                     top_left = np.array([this_x, this_y])
                     
-            print("Top left is", top_left, "bottom rt is", btm_rt)
+            #print("Top left is", top_left, "bottom rt is", btm_rt)
 
             #if top left or btm rt couldn't be found, jump to next contour
             if btm_rt.size == 0 or top_left.size == 0:
-                print("An extraneous rect or square was found in a frame/img, because btm_rt or top_left is []")
+                #print("An extraneous rect or square was found in a frame/img, because btm_rt or top_left is []")
                 continue
 
             #otherwise we can successfully compute pixel dimensions of the square
@@ -304,14 +314,14 @@ def find_square_on_img(image):
 
             #to weed out contours that aren't the black square, put threshhold on size of square and diff between height and width
             if dimsum < 45 and dimsum > 10 and abs(width - height) < 20:
-                print("This contour width is", width, "and height is", height) 
+                #print("This contour width is", width, "and height is", height) 
 
                 #we could still have some extraneous contours that were found, so we'll keep track of which one is highest in image (extraneous ones tend to be found on bottom of drone)
 
                 #if we were able to compute the center of mass
                 if compute_com_success and cY < winning_yval:
-                    print("Center of mass of this contour found was", cX, cY)
-                    print("New highest contour in image found, setting correct_contour")
+                    #print("Center of mass of this contour found was", cX, cY)
+                    #print("New highest contour in image found, setting correct_contour")
 
                     winning_yval = cY
                     winning_xval = cX
@@ -339,19 +349,34 @@ def find_square_on_img(image):
         #write name of shape at the "center of mass" of the contour
         cv2.putText(cropped, shape, (winning_xval, winning_yval), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
+        #if this is the first frame, can't compute displacement
+        if lastX is not None:
+            #compute x and y displacement from last frame
+            xDisp = cX - lastX
+            yDisp = cY - lastY
+
+        lastX = cX
+        lastY = cY
+
+        #print("xDisp is", xDisp, "and yDisp is", yDisp)
+
+
     #otherwise we didn't find the square, increment missed_frames    
     else:
         #print("This contour width is", width, "and height is", height) 
         #print("FAIL on correct_contour is not None")
-        cv2.waitKey(0)
+        #cv2.waitKey(0)
 
-    
-        missed_frames += 1
-            
+        missed_frames += 1  
+
+        #flag xDisp and yDisp as invalid
+        xDisp = -1000000
+        yDisp = -1000000     
 
     # show the output image
-    cv2.imshow("Image", cropped)
+    cv2.imshow("Original cropped image", cropped)
 
+    '''
     #if a was pressed, play back the processed video, waiting 10 ms on each frame
     if (animate):
         k = cv2.waitKey(5)
@@ -371,9 +396,10 @@ def find_square_on_img(image):
 
         #if key is a, play the video frame by frame, processing the data
         elif k == ord('a'):
-            animate = True
+            animate = True'''
 
 
+    return [xDisp, yDisp]
 
 def process_img(img):
     #open the image using OpenCV
@@ -416,6 +442,7 @@ def process_video(vid):
     # Release all space and windows once done
     cam.release()
 
+vid_processing_done = False
 
 def start_realtime():
     # Instantiate a Visualizer object for the input video file
@@ -426,8 +453,106 @@ def start_realtime():
     # Close all open windows after animation ends
     cv2.destroyAllWindows()
 
+def update_plots():
+    global xcurve, ycurve, ptr, data, xplot, vid, currentframe, app, vid_processing_done, xDispDataX, yDispDataX, xDispDataY, yDispDataY, currTime
 
-# Main entrance point
+    #if there's still video to process
+    if not vid_processing_done:
+        ret, frame = cam.read()
+
+        if ret:
+            # if there's still video left to process, continue processing images
+            # load the image and resize it to a smaller factor so that
+            # the shapes can be approximated better
+            dispData = find_square_on_img(frame)
+
+            #calculate current time a
+            currTime += 0.017 #videos are 60FPS
+
+            #ignore bogus data
+            if dispData[0] != -1000000 and abs(dispData[0]) < 50 and abs(dispData[1]) < 50:
+                #add disp data to plot data
+                xDispDataY.append(dispData[0])
+                yDispDataY.append(dispData[1])
+
+                #and add time data to plot
+                xDispDataX.append(currTime)
+                yDispDataX.append(currTime)
+
+            #update the plot curves with the appended data
+            xcurve.setData(xDispDataX, xDispDataY)
+            ycurve.setData(yDispDataX, yDispDataY)
+
+            #increasing counter so that it will show how many frames are created
+            currentframe += 1
+        else:
+            cv2.destroyAllWindows()
+            vid_processing_done = True
+
+    '''
+    if ptr == 0:
+        #stop auto-scaling on y after the first data set is plotted
+        xplot.enableAutoRange('y', False)  
+        yplot.enableAutoRange('y', False) '''
+    ptr += 1
+
+    # check for quit signal
+    #'q' button is set as quitting button
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        cv2.destroyAllWindows()
+        app.quit()
+
+
+#create and start up pyqtgraph app
+
+#instantiate a qt application
+app = QtGui.QApplication([])
+
+ptr = 0
+
+#create the plot graphic with specified margins
+win = pg.GraphicsLayoutWidget(show=True, title="NoShake x and y metrics")
+#win.setContentsMargins(100, 100, 100, 100)
+
+
+#create a pyqtgraph window with given size and title
+win.resize(3000, 1000)
+win.setWindowTitle('NoShake x and y metrics')
+
+#Enable antialiasing for prettier plots
+pg.setConfigOptions(antialias=True)
+
+#configure x plot
+xplot = win.addPlot(title="X displacement")
+
+#start a line plot for x, specifying the pen color
+xcurve = xplot.plot(pen='y')
+xplot.setLabel('left', "X disp", units='pixels')
+xplot.setLabel('bottom', "Time", units='s')
+xplot.setYRange(-20, 20, padding=0)
+
+win.nextRow()
+
+#configure y plot
+yplot = win.addPlot(title="Y displacement")
+
+#start a line plot for y, specifying the pen color
+ycurve = yplot.plot(pen='y') 
+yplot.setLabel('left', "Y disp", units='pixels')
+yplot.setLabel('bottom', "Time", units='s')
+yplot.setYRange(-20, 20, padding=0)
+
+#create some random data to plot on each clock cycle of the app
+data = np.random.normal(size=(10,1000))
+
+
+#timer: set app to run update_plots() every 50 ms
+timer = QtCore.QTimer()
+timer.timeout.connect(update_plots)
+timer.start(10)
+
+
+#Main entrance point
 if __name__ == '__main__':
     # construct the argument parse and parse the arguments
     ap = argparse.ArgumentParser()
@@ -443,8 +568,19 @@ if __name__ == '__main__':
         print("You can't pass in an image and a video at the same time.")
     elif args["image"] != None:
         process_img(args["image"])
+
+    #if a video is being passed    
     elif args["video"] != None:
-        process_video(args["video"])
+        #set globs
+        cam = cv2.VideoCapture(args["video"])
+
+        #execute the application.
+        #Start Qt event loop unless running in interactive mode or using pyside.
+        if (sys.flags.interactive != 1) or not hasattr(QtCore, 'PYQT_VERSION'):
+            QtGui.QApplication.instance().exec_()
+
+        #process the video    
+        #process_video(args["video"])
 
     else:
         try:
