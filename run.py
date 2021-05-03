@@ -15,6 +15,8 @@ import math
 import argparse
 import imutils
 
+#csv lib
+import csv
 
 # initialize some global vars
 item = 0
@@ -32,6 +34,25 @@ currentframe = 0
 currTime = 0
 cam = None
 
+APPLY_FILTER = False
+
+INVALID_DISP = -1000000
+
+DIMSUM_MIN_THRESH = 200 #250
+DIMSUM_MAX_THRESH = 400 #400
+
+SHOW_ALL_CONTS = False
+
+START_AT_FRAME = 50
+
+#color with which to draw contour
+CONT_COL = (255, 0, 0)
+#CONT_COL = (0, 255, 0)
+
+#whether the last frame was missed
+#need to know this to avoid random spikes in displacement data caused by missed frames
+returning_from_missed = False
+
 #the position of the square's center in the last frame
 lastX = None
 lastY = None
@@ -42,6 +63,7 @@ xDispDataY = []
 yDispDataX = []
 yDispDataY = []
 
+npdata = []
 
 class ShapeDetector:
     def __init__(self):
@@ -74,7 +96,7 @@ class ShapeDetector:
             
             
         #return the name of the shape, only if it's been identified successfully (we don't want to draw all the random contours found)
-        if shape != "unidentified":
+        if APPLY_FILTER == False:
             return shape
 
 
@@ -201,32 +223,86 @@ def invert_image(img):
 
 
 # Run the model on 30 frames at a time
-def find_square_on_img(image):
+def find_square_on_img(image, use_color):
     # these globals get updated on every callback
-    global item, item_num, animate, missed_frames
+    global item, item_num, animate, missed_frames, returning_from_missed
 
-    #position of square's center in last frame
+    #position of square's center in last framed
     global lastX, lastY
 
     #crop and resize image
-    cropped = image[180:800, 200:1720] # startY:endY, startX:endX
+    #cropped = image[:, 220:] # startY:endY, startX:endX
+    cropped = image[:, :]
+
     resized = imutils.resize(cropped, width=300)
 
     #print("Resized shape is (rows, cols, channels)", resized.shape)
 
     #compute resize ratio: ratio of original image height to new image height (pixels of original per pixel of new)
-    ratioY = cropped.shape[0] / float(resized.shape[0])
+    ratioY = cropped.shape[0] / float(resized.shape[0]) #was cropped / resized
     ratioX = cropped.shape[1] / float(resized.shape[1])
 
     #print("X and Y ratios are", ratioX, ",", ratioY)
 
-    # convert the resized image to grayscale, blur it slightly, and threshold it
+    if (use_color and currentframe > START_AT_FRAME):
+        # It converts the BGR color space of image to HSV color space
+        hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
+
+        dark_green  = np.uint8([[[7,67,0]]])
+        dark_green = cv2.cvtColor(dark_green,cv2.COLOR_BGR2HSV)
+        #print(dark_green)
+
+        light_green  = np.uint8([[[32,251,10]]])
+        light_green = cv2.cvtColor(light_green,cv2.COLOR_BGR2HSV)
+        #print(light_green)
+        
+        # Threshold of blue in HSV space
+        lower_blue = np.array([63, 150, 141])
+        upper_blue = np.array([63, 230, 230])
+
+        lower_green = np.array([0, 165, 0]) #was 5, 230, 7
+        upper_green = np.array([160, 255, 160]) #was 71, 255, 68
+    
+        # preparing the mask to overlay
+        mask = cv2.inRange(hsv, lower_green, upper_green)
+
+        blankimg = cv2.imread("/home/nodog/Downloads/black.jpg")
+        #blankimg = cv2.resize(blankimg, (cropped.shape[1], cropped.shape[0])) #width, height
+        blankimg = blankimg[:cropped.shape[0], :cropped.shape[1]]
+
+        for x in range(cropped.shape[1]):
+            for y in range(cropped.shape[0]):
+                #blankimg[y, x] = 255
+
+                bgr = tuple(cropped[y,x])
+                b = bgr[0]
+                g = bgr[1]
+                r = bgr[2]
+
+                if b >= lower_green[0] and b <= upper_green[0] and g >= lower_green[1] and g <= upper_green[1] and r >= lower_green[2] and r <= upper_green[2]:
+                    blankimg[y, x] = 255
+
+        # The black region in the mask has the value of 0,
+        # so when multiplied with original image removes all non-blue regions
+        result = cv2.bitwise_and(cropped, cropped, mask = mask)
+    
+        #cv2.imshow('Mask', mask)
+        #cv2.imshow('Result', result)
+
+        cv2.imshow('TEST', blankimg)
+
+        resized = blankimg
+        ratioY = 1
+        ratioX = 1
+
+    
+    #convert the resized image to grayscale, blur it slightly, and threshold it
     gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     thresh = cv2.threshold(blurred, 60, 255, cv2.THRESH_BINARY)[1]
 
     #invert image colors
-    thresh = invert_image(thresh)
+    #thresh = invert_image(thresh)
 
     #print("Thresh shape is (rows, cols, channels)", thresh.shape)
 
@@ -247,6 +323,8 @@ def find_square_on_img(image):
     #**NOTE: if we can't detect square in this frame, [0, 0] WILL BE RETURNED, THROWING DATA OFF
     xDisp = 0
     yDisp = 0
+
+    num_of_conts_in_frame_that_satisy_dims = 0
 
     #print(len(cnts), "contours found in frame")
 
@@ -304,7 +382,7 @@ def find_square_on_img(image):
 
             #if top left or btm rt couldn't be found, jump to next contour
             if btm_rt.size == 0 or top_left.size == 0:
-                #print("An extraneous rect or square was found in a frame/img, because btm_rt or top_left is []")
+                print("An extraneous rect or square was found in a frame/img, because btm_rt or top_left is []")
                 continue
 
             #otherwise we can successfully compute pixel dimensions of the square
@@ -312,9 +390,13 @@ def find_square_on_img(image):
             height = btm_rt[1] - top_left[1]
             dimsum = width + height
 
+            #print("dimsum is", dimsum)
+
             #to weed out contours that aren't the black square, put threshhold on size of square and diff between height and width
-            if dimsum < 45 and dimsum > 10 and abs(width - height) < 20:
-                #print("This contour width is", width, "and height is", height) 
+            if dimsum < DIMSUM_MAX_THRESH and dimsum > DIMSUM_MIN_THRESH and abs(width - height) < 100:
+                #print("This contour width is", width, "and height is", height, "and dim diff is", abs(width - height)) 
+
+                num_of_conts_in_frame_that_satisy_dims += 1
 
                 #we could still have some extraneous contours that were found, so we'll keep track of which one is highest in image (extraneous ones tend to be found on bottom of drone)
 
@@ -328,10 +410,25 @@ def find_square_on_img(image):
                     correct_contour = c
                 else:
                     print("FAIL on compute_com_success and cY < winning_yval")
-            '''else:
-                print("FAIL on dimension and squarish check")'''
-        '''else:
-            print("FAIL on shape != None")'''
+            else:
+                print("FAIL on dimension and squarish check")
+        else:
+            print("FAIL on shape != None")
+
+
+    #print(num_of_conts_in_frame_that_satisy_dims, "satisfying square contours found in frame")
+
+    #if we specified to show all the contours, draw all
+    if SHOW_ALL_CONTS:
+        for c in cnts:
+            c = c.astype("int")
+
+            #draw the contour in green on original cropped color image
+            cv2.drawContours(cropped, [c], -1, CONT_COL, 2)
+
+            #write name of shape at the "center of mass" of the contour
+            cv2.putText(cropped, shape, (winning_xval, winning_yval), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
 
     #if we found some contour
     if correct_contour is not None:
@@ -344,7 +441,7 @@ def find_square_on_img(image):
         correct_contour = correct_contour.astype("int")
 
         #draw the contour in green on original cropped color image
-        cv2.drawContours(cropped, [correct_contour], -1, (0, 255, 0), 2)
+        cv2.drawContours(cropped, [correct_contour], -1, CONT_COL, 2)
 
         #write name of shape at the "center of mass" of the contour
         cv2.putText(cropped, shape, (winning_xval, winning_yval), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
@@ -355,8 +452,17 @@ def find_square_on_img(image):
             xDisp = cX - lastX
             yDisp = cY - lastY
 
+        #if we're returning from a missed frame, just set displacement as invalid for now to avoid erroneous spikes
+        #assuming next frame is also valid, then we'll have a valid displacement to add to the data/graph
+        if returning_from_missed:
+            xDisp = INVALID_DISP
+            yDisp = INVALID_DISP    
+
         lastX = cX
         lastY = cY
+
+        #clear returning_from_missed, since this frame is not missed
+        returning_from_missed = False
 
         #print("xDisp is", xDisp, "and yDisp is", yDisp)
 
@@ -370,13 +476,15 @@ def find_square_on_img(image):
         missed_frames += 1  
 
         #flag xDisp and yDisp as invalid
-        xDisp = -1000000
-        yDisp = -1000000     
+        xDisp = INVALID_DISP
+        yDisp = INVALID_DISP
+
+        returning_from_missed = True 
 
     # show the output image
     cv2.imshow("Original cropped image", cropped)
 
-    '''
+    
     #if a was pressed, play back the processed video, waiting 10 ms on each frame
     if (animate):
         k = cv2.waitKey(5)
@@ -386,18 +494,17 @@ def find_square_on_img(image):
         k = cv2.waitKey(0)
 
         #if key is n, move to next frame of vid
-        if k == ord('n'):
-            cv2.destroyAllWindows()
+        '''if k == ord('n'):
+            cv2.destroyAllWindows()'''
 
         #if key is q, close all windows and quit program
-        elif k == ord('q'): 
+        if k == ord('q'): 
             cv2.destroyAllWindows()
             quit()
 
         #if key is a, play the video frame by frame, processing the data
         elif k == ord('a'):
-            animate = True'''
-
+            animate = True
 
     return [xDisp, yDisp]
 
@@ -407,7 +514,7 @@ def process_img(img):
 
     print("The passed image shape is (rows, cols, channels) ", opened_image.shape)
 
-    find_square_on_img(opened_image)
+    find_square_on_img(opened_image, use_color=True)
     print("Processing single image...")
 
 
@@ -426,7 +533,7 @@ def process_video(vid):
             # if there's still video left to process, continue processing images
             # load the image and resize it to a smaller factor so that
             # the shapes can be approximated better
-            find_square_on_img(frame)
+            find_square_on_img(frame, use_color=True)
 
             #cv2.imshow("Current frame", frame)
 
@@ -454,7 +561,7 @@ def start_realtime():
     cv2.destroyAllWindows()
 
 def update_plots():
-    global xcurve, ycurve, ptr, data, xplot, vid, currentframe, app, vid_processing_done, xDispDataX, yDispDataX, xDispDataY, yDispDataY, currTime
+    global xcurve, ycurve, ptr, data, xplot, vid, currentframe, app, vid_processing_done, xDispDataX, yDispDataX, xDispDataY, yDispDataY, currTime, npdata
 
     #if there's still video to process
     if not vid_processing_done:
@@ -464,13 +571,13 @@ def update_plots():
             # if there's still video left to process, continue processing images
             # load the image and resize it to a smaller factor so that
             # the shapes can be approximated better
-            dispData = find_square_on_img(frame)
+            dispData = find_square_on_img(frame, use_color=True)
 
             #calculate current time a
             currTime += 0.017 #videos are 60FPS
 
             #ignore bogus data
-            if dispData[0] != -1000000 and abs(dispData[0]) < 50 and abs(dispData[1]) < 50:
+            if dispData[0] != INVALID_DISP and abs(dispData[0]) < 50 and abs(dispData[1]) < 50:
                 #add disp data to plot data
                 xDispDataY.append(dispData[0])
                 yDispDataY.append(dispData[1])
@@ -479,14 +586,31 @@ def update_plots():
                 xDispDataX.append(currTime)
                 yDispDataX.append(currTime)
 
+                npdata.append([currTime, dispData[0], dispData[1]])
+
+                #print(npdata)
+
             #update the plot curves with the appended data
             xcurve.setData(xDispDataX, xDispDataY)
             ycurve.setData(yDispDataX, yDispDataY)
 
             #increasing counter so that it will show how many frames are created
             currentframe += 1
+            print(currentframe, "of 4676 total frames processed")
         else:
             cv2.destroyAllWindows()
+
+            '''
+            #write data to csv file
+            with open('outputs/no_stab_1.csv', mode='w') as data_file:
+                data_writer = csv.writer(employee_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+
+                data_writer.writerow(['John Smith', 'Accounting', 'November'])
+                data_writer.writerow(['Erica Meyers', 'IT', 'March'])'''
+
+            a = np.array([xDispDataX, xDispDataY, yDispDataY])
+            np.savetxt('outputs/with_stab_1.csv', npdata, delimiter=',')
+
             vid_processing_done = True
 
     '''
@@ -562,6 +686,7 @@ if __name__ == '__main__':
                     help="path to the input image")
     ap.add_argument("-v", "--video", required=False,
                     help="path to the input video")
+    ap.add_argument("-s", "--step", required=False, help="whether to manually step through frames")
     args = vars(ap.parse_args())
 
     if args["image"] != None and args["video"] != None:
@@ -571,16 +696,18 @@ if __name__ == '__main__':
 
     #if a video is being passed    
     elif args["video"] != None:
-        #set globs
-        cam = cv2.VideoCapture(args["video"])
+        if args["step"] == None:
+            #set globs
+            cam = cv2.VideoCapture(args["video"])
 
-        #execute the application.
-        #Start Qt event loop unless running in interactive mode or using pyside.
-        if (sys.flags.interactive != 1) or not hasattr(QtCore, 'PYQT_VERSION'):
-            QtGui.QApplication.instance().exec_()
+            #execute the application.
+            #Start Qt event loop unless running in interactive mode or using pyside.
+            if (sys.flags.interactive != 1) or not hasattr(QtCore, 'PYQT_VERSION'):
+                QtGui.QApplication.instance().exec_()
 
-        #process the video    
-        #process_video(args["video"])
+        else:
+            #process the video    
+            process_video(args["video"])
 
     else:
         try:
