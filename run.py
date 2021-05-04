@@ -38,30 +38,47 @@ APPLY_FILTER = False
 
 INVALID_DISP = -1000000
 
-DIMSUM_MIN_THRESH = 200 #250
-DIMSUM_MAX_THRESH = 400 #400
+DIMSUM_MIN_THRESH = 130 #250
+DIMSUM_MAX_THRESH = 500 #400
 
 SHOW_ALL_CONTS = False
 
-START_AT_FRAME = 50
+START_AT_FRAME = 0
+
+COLOR_BLUE = 0
+COLOR_GREEN = 1
+
+# Threshold of blue in HSV space
+LOWER_GREEN_HSV = np.array([40, 65, 65])
+UPPER_GREEN_HSV = np.array([80, 255, 255])
+
+LOWER_BLUE_HSV = np.array([90, 65, 65])
+UPPER_BLUE_HSV = np.array([160, 255, 255])
 
 #color with which to draw contour
-CONT_COL = (255, 0, 0)
-#CONT_COL = (0, 255, 0)
+CONT_COL_BLUE = (255, 0, 0)
+CONT_COL_GREEN = (0, 255, 0)
+CONT_COL_RED = (0, 0, 255)
 
 #whether the last frame was missed
 #need to know this to avoid random spikes in displacement data caused by missed frames
-returning_from_missed = False
+returning_from_missed_blue = False
+returning_from_missed_green = False
 
 #the position of the square's center in the last frame
-lastX = None
-lastY = None
+lastXBlue = None
+lastYBlue = None
+lastXGreen = None
+lastYGreen = None
+
 
 #arrays to hold data to plot
-xDispDataX = []
-xDispDataY = []
-yDispDataX = []
-yDispDataY = []
+xDispDataBlue = []
+xDispDataGreen = []
+yDispDataBlue = []
+yDispDataGreen = []
+
+timeData = []
 
 npdata = []
 
@@ -223,12 +240,16 @@ def invert_image(img):
 
 
 # Run the model on 30 frames at a time
-def find_square_on_img(image, use_color):
+def find_square_on_img(image, use_color, color):
     # these globals get updated on every callback
-    global item, item_num, animate, missed_frames, returning_from_missed
+    global item, item_num, animate, missed_frames, returning_from_missed_blue, returning_from_missed_green
 
     #position of square's center in last framed
-    global lastX, lastY
+    global lastXBlue, lastYBlue, lastXGreen, lastYGreen
+
+    image = image.copy()
+
+    contour_color = CONT_COL_RED
 
     #crop and resize image
     #cropped = image[:, 220:] # startY:endY, startX:endX
@@ -244,28 +265,37 @@ def find_square_on_img(image, use_color):
 
     #print("X and Y ratios are", ratioX, ",", ratioY)
 
-    if (use_color and currentframe > START_AT_FRAME):
+    #greenonly = cropped[:,:,0]
+
+    #cv2.imshow("Green channel only", greenonly)
+
+    if (use_color and currentframe >= START_AT_FRAME):
         # It converts the BGR color space of image to HSV color space
         hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
 
-        dark_green  = np.uint8([[[7,67,0]]])
+        '''
+        dark_green  = np.uint8([[[0,160,0]]])
         dark_green = cv2.cvtColor(dark_green,cv2.COLOR_BGR2HSV)
         #print(dark_green)
 
-        light_green  = np.uint8([[[32,251,10]]])
+        light_green  = np.uint8([[[160,255,160]]])
         light_green = cv2.cvtColor(light_green,cv2.COLOR_BGR2HSV)
         #print(light_green)
-        
-        # Threshold of blue in HSV space
-        lower_blue = np.array([63, 150, 141])
-        upper_blue = np.array([63, 230, 230])
 
-        lower_green = np.array([0, 165, 0]) #was 5, 230, 7
-        upper_green = np.array([160, 255, 160]) #was 71, 255, 68
+        lower_green = np.array([0, 160, 0]) #was 5, 230, 7
+        upper_green = np.array([160, 255, 160]) #was 71, 255, 68'''
     
-        # preparing the mask to overlay
-        mask = cv2.inRange(hsv, lower_green, upper_green)
 
+        if (color == COLOR_GREEN):
+            #preparing the mask to overlay
+            mask = cv2.inRange(hsv, LOWER_GREEN_HSV, UPPER_GREEN_HSV)
+            contour_color = CONT_COL_BLUE
+        elif color == COLOR_BLUE:
+            mask = cv2.inRange(hsv, LOWER_BLUE_HSV, UPPER_BLUE_HSV)
+
+        #cv2.imshow("HSV MASK", mask)
+
+        '''
         blankimg = cv2.imread("/home/nodog/Downloads/black.jpg")
         #blankimg = cv2.resize(blankimg, (cropped.shape[1], cropped.shape[0])) #width, height
         blankimg = blankimg[:cropped.shape[0], :cropped.shape[1]]
@@ -289,27 +319,28 @@ def find_square_on_img(image, use_color):
         #cv2.imshow('Mask', mask)
         #cv2.imshow('Result', result)
 
-        cv2.imshow('TEST', blankimg)
+        #cv2.imshow('TEST', blankimg)'''
 
-        resized = blankimg
+        resized = mask
+        thresh = resized
         ratioY = 1
         ratioX = 1
 
+    if not use_color:
+        #convert the resized image to grayscale, blur it slightly, and threshold it
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        thresh = cv2.threshold(blurred, 60, 255, cv2.THRESH_BINARY)[1]
+        #invert image colors
+        thresh = invert_image(thresh)
+
     
-    #convert the resized image to grayscale, blur it slightly, and threshold it
-    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    thresh = cv2.threshold(blurred, 60, 255, cv2.THRESH_BINARY)[1]
-
-    #invert image colors
-    #thresh = invert_image(thresh)
-
     #print("Thresh shape is (rows, cols, channels)", thresh.shape)
 
     # image has now been binarized and inverted, display it
     cv2.namedWindow('Processed image', cv2.WINDOW_NORMAL)
     cv2.imshow("Processed image", thresh)
-    cv2.resizeWindow('Processed image', 600, 300)
+    cv2.resizeWindow('Processed image', thresh.shape[1], thresh.shape[0])
 
     # find contours in the thresholded image
     cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -345,7 +376,7 @@ def find_square_on_img(image, use_color):
         else:
             compute_com_success = False
 
-        # detect name of shape using contour
+        #detect name of shape using contour
         shape = sd.detect(c)
 
         if shape != None:
@@ -410,10 +441,10 @@ def find_square_on_img(image, use_color):
                     correct_contour = c
                 else:
                     print("FAIL on compute_com_success and cY < winning_yval")
-            else:
-                print("FAIL on dimension and squarish check")
-        else:
-            print("FAIL on shape != None")
+            '''else:
+                print("FAIL on dimension and squarish check")'''
+        '''else:
+            print("FAIL on shape != None")'''
 
 
     #print(num_of_conts_in_frame_that_satisy_dims, "satisfying square contours found in frame")
@@ -424,7 +455,7 @@ def find_square_on_img(image, use_color):
             c = c.astype("int")
 
             #draw the contour in green on original cropped color image
-            cv2.drawContours(cropped, [c], -1, CONT_COL, 2)
+            cv2.drawContours(cropped, [c], -1, contour_color, 2)
 
             #write name of shape at the "center of mass" of the contour
             cv2.putText(cropped, shape, (winning_xval, winning_yval), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
@@ -441,28 +472,38 @@ def find_square_on_img(image, use_color):
         correct_contour = correct_contour.astype("int")
 
         #draw the contour in green on original cropped color image
-        cv2.drawContours(cropped, [correct_contour], -1, CONT_COL, 2)
+        cv2.drawContours(cropped, [correct_contour], -1, contour_color, 2)
 
         #write name of shape at the "center of mass" of the contour
         cv2.putText(cropped, shape, (winning_xval, winning_yval), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
-        #if this is the first frame, can't compute displacement
-        if lastX is not None:
+        #if this is the first frame, can't compute displacement, leave it at 0
+        if color == COLOR_BLUE and lastXBlue is not None:
             #compute x and y displacement from last frame
-            xDisp = cX - lastX
-            yDisp = cY - lastY
+            xDisp = winning_xval - lastXBlue
+            yDisp = winning_yval - lastYBlue
+        elif color == COLOR_GREEN and lastXGreen is not None:
+            xDisp = winning_xval - lastXGreen
+            yDisp = winning_yval - lastYGreen
 
         #if we're returning from a missed frame, just set displacement as invalid for now to avoid erroneous spikes
         #assuming next frame is also valid, then we'll have a valid displacement to add to the data/graph
-        if returning_from_missed:
+        if (color == COLOR_GREEN and returning_from_missed_green) or (color == COLOR_BLUE and returning_from_missed_blue):
             xDisp = INVALID_DISP
             yDisp = INVALID_DISP    
 
-        lastX = cX
-        lastY = cY
+        if color == COLOR_BLUE:
+            lastXBlue = winning_xval
+            lastYBlue = winning_yval
+        elif color == COLOR_GREEN:
+            lastXGreen = winning_xval
+            lastYGreen = winning_yval
+
+        #print(color, "Last blue is", lastXBlue, ",", lastYBlue, "and last green is", lastXGreen, ",", lastYGreen)
 
         #clear returning_from_missed, since this frame is not missed
-        returning_from_missed = False
+        returning_from_missed_blue = False
+        returning_from_missed_green = False
 
         #print("xDisp is", xDisp, "and yDisp is", yDisp)
 
@@ -479,7 +520,10 @@ def find_square_on_img(image, use_color):
         xDisp = INVALID_DISP
         yDisp = INVALID_DISP
 
-        returning_from_missed = True 
+        if color == COLOR_BLUE:
+            returning_from_missed_blue = True
+        elif color == COLOR_GREEN:
+            returning_from_missed_green = True
 
     # show the output image
     cv2.imshow("Original cropped image", cropped)
@@ -506,7 +550,11 @@ def find_square_on_img(image, use_color):
         elif k == ord('a'):
             animate = True
 
+    #to return disp of square from last frame
     return [xDisp, yDisp]
+
+    #to return abs pixel location of square
+    #return [winning_xval, winning_yval]
 
 def process_img(img):
     #open the image using OpenCV
@@ -561,7 +609,7 @@ def start_realtime():
     cv2.destroyAllWindows()
 
 def update_plots():
-    global xcurve, ycurve, ptr, data, xplot, vid, currentframe, app, vid_processing_done, xDispDataX, yDispDataX, xDispDataY, yDispDataY, currTime, npdata
+    global xcurve_blue, ycurve_blue, xcurve_green, ycurve_green, ptr, data, xplot_blue, vid, currentframe, app, vid_processing_done, timeData, yDispDataBlue, xDispDataBlue, yDispDataGreen, xDispDataGreen, currTime, npdata
 
     #if there's still video to process
     if not vid_processing_done:
@@ -571,32 +619,38 @@ def update_plots():
             # if there's still video left to process, continue processing images
             # load the image and resize it to a smaller factor so that
             # the shapes can be approximated better
-            dispData = find_square_on_img(frame, use_color=True)
+            dispDataGreen = find_square_on_img(frame, True, COLOR_GREEN)
+            dispDataBlue = find_square_on_img(frame, True, COLOR_BLUE)
 
             #calculate current time a
             currTime += 0.017 #videos are 60FPS
 
             #ignore bogus data
-            if dispData[0] != INVALID_DISP and abs(dispData[0]) < 50 and abs(dispData[1]) < 50:
+            if dispDataGreen[0] != INVALID_DISP and dispDataBlue[0] != INVALID_DISP and abs(dispDataGreen[0]) < 50 and abs(dispDataGreen[1]) < 50 and abs(dispDataBlue[0]) < 50 and abs(dispDataBlue[1]) < 50:
                 #add disp data to plot data
-                xDispDataY.append(dispData[0])
-                yDispDataY.append(dispData[1])
+                xDispDataBlue.append(dispDataBlue[0])
+                yDispDataBlue.append(dispDataBlue[1])
+
+                xDispDataGreen.append(dispDataGreen[0])
+                yDispDataGreen.append(dispDataGreen[1])
 
                 #and add time data to plot
-                xDispDataX.append(currTime)
-                yDispDataX.append(currTime)
+                timeData.append(currTime)
 
-                npdata.append([currTime, dispData[0], dispData[1]])
-
-                #print(npdata)
+                npdata.append([currTime, dispDataBlue[0], dispDataBlue[1], dispDataGreen[0], dispDataGreen[1]])
+            else:
+                print("ERROR: INVALID DISP DATA came back from find_square_on_img()")
 
             #update the plot curves with the appended data
-            xcurve.setData(xDispDataX, xDispDataY)
-            ycurve.setData(yDispDataX, yDispDataY)
+            xcurve_blue.setData(timeData, xDispDataBlue)
+            ycurve_blue.setData(timeData, yDispDataBlue)
+            
+            xcurve_green.setData(timeData, xDispDataGreen)
+            ycurve_green.setData(timeData, yDispDataBlue)
 
             #increasing counter so that it will show how many frames are created
             currentframe += 1
-            print(currentframe, "of 4676 total frames processed")
+            #print(currentframe, "of 4676 total frames processed")
         else:
             cv2.destroyAllWindows()
 
@@ -607,11 +661,11 @@ def update_plots():
 
                 data_writer.writerow(['John Smith', 'Accounting', 'November'])
                 data_writer.writerow(['Erica Meyers', 'IT', 'March'])'''
-
-            a = np.array([xDispDataX, xDispDataY, yDispDataY])
-            np.savetxt('outputs/with_stab_1.csv', npdata, delimiter=',')
+                
+            np.savetxt('outputs/double_trial_1_abspix.csv', npdata, delimiter=',')
 
             vid_processing_done = True
+            print(missed_frames, "frames missed")
 
     '''
     if ptr == 0:
@@ -647,27 +701,52 @@ win.setWindowTitle('NoShake x and y metrics')
 pg.setConfigOptions(antialias=True)
 
 #configure x plot
-xplot = win.addPlot(title="X displacement")
+xplot_blue = win.addPlot(title="STATIC: X displacement")
 
 #start a line plot for x, specifying the pen color
-xcurve = xplot.plot(pen='y')
-xplot.setLabel('left', "X disp", units='pixels')
-xplot.setLabel('bottom', "Time", units='s')
-xplot.setYRange(-20, 20, padding=0)
+xcurve_blue = xplot_blue.plot(pen='y')
+xplot_blue.setLabel('left', "X disp", units='pixels')
+xplot_blue.setLabel('bottom', "Time", units='s')
+xplot_blue.setYRange(-20, 20, padding=0)
 
 win.nextRow()
 
 #configure y plot
-yplot = win.addPlot(title="Y displacement")
+yplot_blue = win.addPlot(title="STATIC: Y displacement")
 
 #start a line plot for y, specifying the pen color
-ycurve = yplot.plot(pen='y') 
-yplot.setLabel('left', "Y disp", units='pixels')
-yplot.setLabel('bottom', "Time", units='s')
-yplot.setYRange(-20, 20, padding=0)
+ycurve_blue = yplot_blue.plot(pen='y') 
+yplot_blue.setLabel('left', "Y disp", units='pixels')
+yplot_blue.setLabel('bottom', "Time", units='s')
+yplot_blue.setYRange(-20, 20, padding=0)
+
+win.nextRow()
+#add plot for the green square
+#configure x plot
+xplot_green = win.addPlot(title="NOSHAKE: X displacement")
+
+#start a line plot for x, specifying the pen color
+xcurve_green = xplot_green.plot(pen='g')
+xplot_green.setLabel('left', "X disp", units='pixels')
+xplot_green.setLabel('bottom', "Time", units='s')
+xplot_green.setYRange(-20, 20, padding=0)
+
+win.nextRow()
+
+#configure y plot
+yplot_green = win.addPlot(title="NOSHAKE: Y displacement")
+
+#start a line plot for y, specifying the pen color
+ycurve_green = yplot_green.plot(pen='g') 
+yplot_green.setLabel('left', "Y disp", units='pixels')
+yplot_green.setLabel('bottom', "Time", units='s')
+yplot_green.setYRange(-20, 20, padding=0)
+
+ 
+
 
 #create some random data to plot on each clock cycle of the app
-data = np.random.normal(size=(10,1000))
+#data = np.random.normal(size=(10,1000))
 
 
 #timer: set app to run update_plots() every 50 ms
